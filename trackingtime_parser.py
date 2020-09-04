@@ -5,9 +5,8 @@ import sched
 import time
 
 
-""" paste your own data in fields below """
 
-""" connecting to the database """
+# connecting to the database
 con = psycopg2.connect(
       database="your_database_name",
       user="your_username",
@@ -16,7 +15,7 @@ con = psycopg2.connect(
       port="your_port"
     )
 
-"""creation of cursor and table"""
+# creation of cursor and table
 cur = con.cursor()
 cur.execute('''CREATE TABLE your_table_name
      (Y_M_D CHAR(50),
