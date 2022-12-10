@@ -1,0 +1,34 @@
+{
+	"name": "Python 3",
+	"build": {
+			"dockerfile": "Dockerfile",
+			"context": "..",
+			"args": {
+					"VARIANT": "3.8"
+					}
+			},
+
+			"customizations": {
+				"vscode": {
+					"settings": {
+						"python.analysis.typeCheckingMode": "basic",
+						"python.defaultInterpreterPath": "/usr/local/bin/python",
+						"python.linting.flake8Enabled": true,  
+						"python.linting.pep8Enabled": true,
+						"python.linting.flake8Args": ["--max-line-length=180", "--ignore=E722"],
+						"python.linting.flake8Path": "/usr/local/py-utils/bin/flake8"
+					},
+					
+					"extensions": [
+						"ms-python.python"
+					]
+				}
+			},
+
+	"remoteUser": "vscode",
+	"workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,Z",
+	"workspaceFolder": "/workspace",
+	
+	"runArgs": ["--userns=keep-id", "--network=host"],
+	"containerUser": "vscode"
+}

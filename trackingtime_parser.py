@@ -1,68 +1,234 @@
+from __future__ import annotations
+
+import argparse
 import datetime
-import psycopg2
+import json
+import sys
+
+import pandas as pd
 import requests
-import sched
-import time
+from pydantic import BaseModel, ValidationError
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine.base import Engine
 
 
+class Credentials(BaseModel):
+    login: str
+    password: str
 
-# connecting to the database
-con = psycopg2.connect(
-      database="your_database_name",
-      user="your_username",
-      password="your_password",
-      host="your_host/localhost",
-      port="your_port"
-    )
+    @classmethod
+    def from_file(cls, file_path: str) -> Credentials:
+        """
+        Parse connection arguments from .json file under 'credentials' key
 
-# creation of cursor and table
-cur = con.cursor()
-cur.execute('''CREATE TABLE your_table_name
-     (Y_M_D CHAR(50),
-      PROJECT CHAR(100),
-      PROJECT_SECONDS INT NOT NULL,
-      USERNAME CHAR(50),
-      TASK CHAR(100),
-      TASK_SECONDS INT NOT NULL);''')
-con.commit()
+        Parameters
+        ----------
+            file_path : str
+                Path to the file to parse.
 
-s = sched.scheduler(time.time, time.sleep)
-
-
-def parser(auto):
-
-    """ This function automaticaly authorize in your trackingtime account
-    and insert into SQL table current date, project name, how many seconds
-    were spent on this project, username of person, task that he is doing,
-    and how many seconds were spent on this task. Also, it repeats every
-    1 hour"""
-
-    login = 'your_login'
-    password = 'your_password'
-    url = 'https://app.trackingtime.co/api/v4/tasks'
-    response = requests.get(url, auth=(login, password))
-    for i in range(len(response.json()['data'])):
-        if response.json()['data'][i]['project'] is None:
-            pass
-        else:
-            p_date = str(datetime.datetime.now())[:-15]  # current date
-            p_project = response.json()['data'][i]['project']  # the name of the project
-            p_proj_time = response.json()['data'][i]['project_accumulated_time']  # seconds, spent on this project
-            p_name = response.json()['data'][i]['user']['name']  # username of person, who is doing the task
-            p_task = response.json()['data'][i]['name']  # the name of the task
-            p_task_time = response.json()['data'][i]['accumulated_time']  # seconds, spent on this task
-
-            cur.execute(
-              "INSERT INTO your_table_name (Y_M_D,PROJECT,PROJECT_SECONDS,USERNAME,TASK,TASK_SECONDS)\
-               VALUES ('%s', '%s', '%s', '%s', '%s', '%s')"\
-              % (p_date, p_project, int(p_proj_time), p_name, p_task, int(p_task_time))
-            )
-
-            con.commit()
-            print("Record inserted successfully")  # to know, that everything is going ok :)
-
-    s.enter(3600, 1, parser, (auto,))
+        Returns
+        -------
+            Credentials
+                Instance of the class.
+        """
+        try:
+            with open(file_path) as json_file:
+                return cls(**json.load(json_file)["time_tracking_creds"])
+        except ValidationError:
+            sys.exit("Not appropriate number of parameters or they have incorrect types")
 
 
-s.enter(3600, 1, parser, (s,))
-s.run()
+class DB(BaseModel):
+    db_name: str
+    table_name: str
+    user: str
+    password: str
+    host: str
+    port: str
+
+    def get_engine(self) -> Engine:
+        """
+        Create engine for the database.
+
+        Returns
+        -------
+            Engine
+                SQLAlchemy engine.
+        """
+        engine = create_engine(
+            f'postgresql://'
+            f'{self.user}:'
+            f'{self.password}@'
+            f'{self.host}:'
+            f'{self.port}/'
+            f'{self.db_name}',
+            future=True
+        )
+        return engine
+
+    @classmethod
+    def from_file(cls, file_path: str) -> DB:
+        """
+        Parse connection arguments from .json file under 'db' key
+
+        Parameters
+        ----------
+            file_path : str
+                Path to the file to parse.
+
+        Returns
+        -------
+            DB
+                Instance of the class.
+        """
+        try:
+            with open(file_path) as json_file:
+                return cls(**json.load(json_file)["db"])
+        except ValidationError:
+            sys.exit("Not appropriate number of parameters or they have incorrect types")
+
+
+def get_path() -> str:
+    """
+    Get path to connections file passed as argument.
+
+    Returns
+    -------
+        str
+            Path to the connections file.
+    """
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-p', '--path',
+                        type=str,
+                        dest='path',
+                        help='Path to the connections file')
+    args = parser.parse_args()
+    path_to_file = args.path
+    if not path_to_file:
+        path_to_file = "connections.json"
+    return path_to_file
+
+
+def create_table(db: DB) -> None:
+    """
+    Create table in the specified database
+
+    Parameters
+    ----------
+        db : DB
+            Class, providing connection to the database.
+
+    Returns
+    -------
+        None
+    """
+    engine = db.get_engine()
+    with engine.connect() as connection:
+        table_creation = text(
+            '''
+            CREATE TABLE IF NOT EXISTS :table_name (
+                creation_date date,
+                project varchar(64),
+                accumulated_time_s int NOT NULL,
+                username varchar(64),
+                task varchar(128),
+                task_time_s int NOT NULL
+            );
+            '''
+        )
+        connection.execute(table_creation, {"table_name": db.table_name})
+        connection.commit()
+
+
+def make_tasks_df(credentials: Credentials,
+                  url: str = 'https://app.trackingtime.co/api/v4/tasks') -> pd.DataFrame:
+    """
+    Create dataframe with the necessary fields to describe tasks
+    in the TimeTracking web application.
+
+    Parameters
+    ----------
+        credentials : Credentials
+            Class with the login and password fields.
+
+        url : str
+            Url to the get tasks endpoint. It may be modified in the future.
+
+    Returns
+    -------
+        pd.DataFrame
+            Dataframe, containing all the tasks from all the projects.
+    """
+
+    login = credentials.login
+    password = credentials.password
+    tasks_data_response = requests.get(url, auth=(login, password))
+    tasks_data = tasks_data_response.json()['data']
+    tasks_df = pd.DataFrame({"date": [],
+                             "project_name": [],
+                             "project_time": [],
+                             "assignee_name": [],
+                             "task_name": [],
+                             "task_time": []})
+    for task_index in range(len(tasks_data)):
+        if tasks_data[task_index]['project'] is None:
+            continue
+        date = datetime.datetime.now().strftime('%Y-%m-%d')
+        project_name = tasks_data[task_index]['project']
+        project_time = tasks_data[task_index]['project_accumulated_time']
+        assignee_name = tasks_data[task_index]['user']['name']
+        task_name = tasks_data[task_index]['name']
+        task_time = tasks_data[task_index]['accumulated_time']
+        task_df = pd.DataFrame({"date": [date],
+                                "project_name": [project_name],
+                                "project_time": [project_time],
+                                "assignee_name": [assignee_name],
+                                "task_name": [task_name],
+                                "task_time": [task_time]})
+        tasks_df = pd.concat([tasks_df, task_df], axis=0)
+
+    tasks_df = tasks_df.reset_index(drop=True)
+    return tasks_df
+
+
+def insert_to_table(db: DB, tasks_df: pd.DataFrame) -> None:
+    """
+    Insert tasks information to the SQL table
+
+    Parameters
+    ----------
+        db : DB
+            Class, providing connection to the database.
+
+        tasks_df : pd.DataFrame
+            Dataframe, containing all the tasks from all the projects.
+
+    Returns
+    -------
+        None
+    """
+    engine = db.get_engine()
+    with engine.connect() as connection:
+        tasks_df.to_sql(
+            name=db.table_name,
+            schema='public',
+            if_exists='append',
+            con=connection,
+            index=False
+        )
+        connection.commit()
+
+
+def main():
+    """Put all the functions together and add tasks info to the SQL table"""
+    path_to_file = get_path()
+    credentials = Credentials.from_file(path_to_file)
+    db = DB.from_file(path_to_file)
+
+    create_table(db)
+    tasks_df = make_tasks_df(credentials)
+    insert_to_table(db, tasks_df)
+
+
+if __name__ == '__main__':
+    main()

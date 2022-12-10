@@ -1,0 +1,14 @@
+{
+    "db": {
+        "db_name": "",
+        "table_name": "",
+        "user": "",
+        "password": "",
+        "host": "",
+        "port": ""
+    },
+    "time_tracking_creds": {
+        "login": "",
+        "password": ""
+    }
+}
